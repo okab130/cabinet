@@ -1,0 +1,19 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: invoiceflow-api
+  web:
+    cors:
+      allowed-origins: "http://localhost:5173"
+
+# Firebase設定（本番環境では環境変数で上書き）
+firebase:
+  project-id: ${FIREBASE_PROJECT_ID:invoiceflow-demo}
+  credentials-path: ${FIREBASE_CREDENTIALS_PATH:}
+
+logging:
+  level:
+    com.example.invoiceflow: DEBUG
+    org.springframework.security: INFO
