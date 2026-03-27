@@ -2,33 +2,38 @@ package com.example.invoiceflow.service;
 
 import com.example.invoiceflow.dto.InvoiceCreateRequest;
 import com.example.invoiceflow.exception.ResourceNotFoundException;
-import com.example.invoiceflow.model.ApprovalRequest;
-import com.example.invoiceflow.model.ApprovalStep;
 import com.example.invoiceflow.model.Invoice;
+import com.google.cloud.firestore.Firestore;
+import com.google.cloud.firestore.QueryDocumentSnapshot;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.UUID;
+import java.util.*;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.stream.Collectors;
-import java.util.stream.IntStream;
 
 /**
  * 帳票サービス
- * 現実装: インメモリストレージ（デモ用）
- * 本番: Firestore への接続に切り替え
+ * Firestore が利用可能な場合は Firestore を使用し、
+ * 未設定の場合はインメモリストレージにフォールバックする。
  */
 @Service
 public class InvoiceService {
 
-    // デモ用インメモリストレージ
-    private final List<Invoice> store = new CopyOnWriteArrayList<>();
+    private static final Logger log = LoggerFactory.getLogger(InvoiceService.class);
+    private static final String COLLECTION = "invoices";
+
+    @Autowired(required = false)
+    private Firestore firestore;
+
+    /** フォールバック用インメモリストレージ */
+    private final List<Invoice> memStore = new CopyOnWriteArrayList<>();
 
     public InvoiceService() {
-        // デモデータ初期化
-        store.add(Invoice.builder()
+        memStore.add(Invoice.builder()
                 .id("inv001").type("send").docType("invoice")
                 .invoiceNumber("INV-2024-001").partnerId("p001").partnerName("株式会社サンプル商事")
                 .amount(100000).taxAmount(10000).totalAmount(110000)
@@ -36,7 +41,7 @@ public class InvoiceService {
                 .status("sent").description("2024年10月分 システム開発費")
                 .createdAt(Instant.now().toString()).updatedAt(Instant.now().toString()).createdBy("u001")
                 .build());
-        store.add(Invoice.builder()
+        memStore.add(Invoice.builder()
                 .id("inv002").type("receive").docType("invoice")
                 .invoiceNumber("INV-R-2024-001").partnerId("p002").partnerName("テスト工業株式会社")
                 .amount(50000).taxAmount(5000).totalAmount(55000)
@@ -46,78 +51,155 @@ public class InvoiceService {
                 .build());
     }
 
-    /** 帳票一覧取得（クエリフィルタ対応） */
+    private boolean useFirestore() {
+        return firestore != null;
+    }
+
+    // ── Firestore ヘルパー ────────────────────────────────────────────────────
+
+    private Invoice docToInvoice(QueryDocumentSnapshot doc) {
+        Invoice inv = doc.toObject(Invoice.class);
+        inv.setId(doc.getId());
+        return inv;
+    }
+
+    // ── CRUD ─────────────────────────────────────────────────────────────────
+
     public List<Invoice> findAll(String type, String status, String partnerId) {
-        return store.stream()
+        if (useFirestore()) {
+            try {
+                var ref = firestore.collection(COLLECTION);
+                var query = ref.orderBy("createdAt", com.google.cloud.firestore.Query.Direction.DESCENDING);
+                if (type != null) query = query.whereEqualTo("type", type);
+                if (status != null) query = query.whereEqualTo("status", status);
+                if (partnerId != null) query = query.whereEqualTo("partnerId", partnerId);
+                return query.get().get().getDocuments().stream()
+                        .map(this::docToInvoice).collect(Collectors.toList());
+            } catch (Exception e) {
+                log.error("[Firestore] findAll error: {}", e.getMessage());
+                throw new RuntimeException("帳票一覧の取得に失敗しました", e);
+            }
+        }
+        return memStore.stream()
                 .filter(i -> type == null || i.getType().equals(type))
                 .filter(i -> status == null || i.getStatus().equals(status))
                 .filter(i -> partnerId == null || i.getPartnerId().equals(partnerId))
                 .collect(Collectors.toList());
     }
 
-    /** 帳票詳細取得 */
     public Invoice findById(String id) {
-        return store.stream()
-                .filter(i -> i.getId().equals(id))
-                .findFirst()
+        if (useFirestore()) {
+            try {
+                var doc = firestore.collection(COLLECTION).document(id).get().get();
+                if (!doc.exists()) throw new ResourceNotFoundException("帳票が見つかりません: " + id);
+                Invoice inv = doc.toObject(Invoice.class);
+                assert inv != null;
+                inv.setId(doc.getId());
+                return inv;
+            } catch (ResourceNotFoundException e) {
+                throw e;
+            } catch (Exception e) {
+                log.error("[Firestore] findById error: {}", e.getMessage());
+                throw new RuntimeException("帳票の取得に失敗しました", e);
+            }
+        }
+        return memStore.stream().filter(i -> i.getId().equals(id)).findFirst()
                 .orElseThrow(() -> new ResourceNotFoundException("帳票が見つかりません: " + id));
     }
 
-    /** 帳票新規作成 */
     public Invoice create(InvoiceCreateRequest req, String createdBy) {
-        String taxRate = "0.10";
-        long taxAmount = Math.round(req.getAmount() * Double.parseDouble(taxRate));
-
+        long taxAmount = Math.round(req.getAmount() * 0.10);
+        String id = UUID.randomUUID().toString();
         Invoice invoice = Invoice.builder()
-                .id(UUID.randomUUID().toString())
-                .type("send")
-                .docType(req.getDocType())
-                .invoiceNumber(req.getInvoiceNumber() != null ? req.getInvoiceNumber()
-                        : "INV-" + System.currentTimeMillis())
-                .partnerId(req.getPartnerId())
-                .amount(req.getAmount())
-                .taxAmount(taxAmount)
-                .totalAmount(req.getAmount() + taxAmount)
-                .issueDate(req.getIssueDate())
-                .dueDate(req.getDueDate())
-                .status(req.getApproverIds() != null && !req.getApproverIds().isEmpty()
-                        ? "pending_approval" : "sent")
+                .id(id).type("send").docType(req.getDocType())
+                .invoiceNumber(req.getInvoiceNumber() != null ? req.getInvoiceNumber() : "INV-" + System.currentTimeMillis())
+                .partnerId(req.getPartnerId()).amount(req.getAmount())
+                .taxAmount(taxAmount).totalAmount(req.getAmount() + taxAmount)
+                .issueDate(req.getIssueDate()).dueDate(req.getDueDate())
+                .status(req.getApproverIds() != null && !req.getApproverIds().isEmpty() ? "pending_approval" : "sent")
                 .description(req.getDescription())
-                .createdAt(Instant.now().toString())
-                .updatedAt(Instant.now().toString())
-                .createdBy(createdBy)
+                .createdAt(Instant.now().toString()).updatedAt(Instant.now().toString()).createdBy(createdBy)
                 .build();
 
-        store.add(invoice);
+        if (useFirestore()) {
+            try {
+                firestore.collection(COLLECTION).document(id).set(toMap(invoice)).get();
+            } catch (Exception e) {
+                log.error("[Firestore] create error: {}", e.getMessage());
+                throw new RuntimeException("帳票の作成に失敗しました", e);
+            }
+        } else {
+            memStore.add(invoice);
+        }
         return invoice;
     }
 
-    /** 帳票更新 */
     public Invoice update(String id, Invoice updated) {
         Invoice existing = findById(id);
         updated.setId(existing.getId());
         updated.setCreatedAt(existing.getCreatedAt());
         updated.setUpdatedAt(Instant.now().toString());
-        store.replaceAll(i -> i.getId().equals(id) ? updated : i);
+
+        if (useFirestore()) {
+            try {
+                firestore.collection(COLLECTION).document(id).set(toMap(updated)).get();
+            } catch (Exception e) {
+                log.error("[Firestore] update error: {}", e.getMessage());
+                throw new RuntimeException("帳票の更新に失敗しました", e);
+            }
+        } else {
+            memStore.replaceAll(i -> i.getId().equals(id) ? updated : i);
+        }
         return updated;
     }
 
-    /** 電子押印 */
     public Invoice stamp(String id, String userId) {
         Invoice invoice = findById(id);
         invoice.setStampedAt(Instant.now().toString());
         invoice.setStampedBy(userId);
         invoice.setStatus("stamped");
         invoice.setUpdatedAt(Instant.now().toString());
-        store.replaceAll(i -> i.getId().equals(id) ? invoice : i);
+
+        if (useFirestore()) {
+            try {
+                Map<String, Object> updates = new HashMap<>();
+                updates.put("stampedAt", invoice.getStampedAt());
+                updates.put("stampedBy", invoice.getStampedBy());
+                updates.put("status", "stamped");
+                updates.put("updatedAt", invoice.getUpdatedAt());
+                firestore.collection(COLLECTION).document(id).update(updates).get();
+            } catch (Exception e) {
+                log.error("[Firestore] stamp error: {}", e.getMessage());
+                throw new RuntimeException("電子押印に失敗しました", e);
+            }
+        } else {
+            memStore.replaceAll(i -> i.getId().equals(id) ? invoice : i);
+        }
         return invoice;
     }
 
-    /** 帳票削除（論理削除: status = cancelled） */
     public void delete(String id) {
-        Invoice invoice = findById(id);
-        invoice.setStatus("cancelled");
-        invoice.setUpdatedAt(Instant.now().toString());
-        store.replaceAll(i -> i.getId().equals(id) ? invoice : i);
+        if (useFirestore()) {
+            try {
+                Map<String, Object> updates = new HashMap<>();
+                updates.put("status", "cancelled");
+                updates.put("updatedAt", Instant.now().toString());
+                firestore.collection(COLLECTION).document(id).update(updates).get();
+            } catch (Exception e) {
+                log.error("[Firestore] delete error: {}", e.getMessage());
+                throw new RuntimeException("帳票の削除に失敗しました", e);
+            }
+        } else {
+            Invoice invoice = findById(id);
+            invoice.setStatus("cancelled");
+            invoice.setUpdatedAt(Instant.now().toString());
+            memStore.replaceAll(i -> i.getId().equals(id) ? invoice : i);
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> toMap(Invoice inv) {
+        com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+        return mapper.convertValue(inv, Map.class);
     }
 }

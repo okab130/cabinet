@@ -2,6 +2,7 @@ import React from 'react';
 import { BrowserRouter, Routes, Route, Navigate, Outlet } from 'react-router-dom';
 import { Box } from '@mui/material';
 import { useAuthStore } from './store/authStore';
+import AppInitializer from './components/AppInitializer';
 import Header from './components/layout/Header';
 import Sidebar from './components/layout/Sidebar';
 import Login from './pages/Login';
@@ -37,6 +38,7 @@ const ProtectedLayout: React.FC = () => {
 
 const App: React.FC = () => (
   <BrowserRouter>
+    <AppInitializer />
     <Routes>
       <Route path="/login" element={<Login />} />
       <Route element={<ProtectedLayout />}>

@@ -8,9 +8,18 @@ spring:
     cors:
       allowed-origins: "http://localhost:5173"
 
-# Firebase設定（本番環境では環境変数で上書き）
+# ─── Firebase 設定 ────────────────────────────────────────────────────────────
+# 環境変数で上書きしてください。
+#
+# Firestore 使用時:
+#   FIREBASE_PROJECT_ID     : Firebase プロジェクトID
+#   FIREBASE_CREDENTIALS_PATH: サービスアカウントキー JSON のファイルパス
+#                              （Cloud Run 等では不要 — ADC を自動使用）
+#
+# 未設定時: インメモリストレージで動作します（デモモード）
+# ─────────────────────────────────────────────────────────────────────────────
 firebase:
-  project-id: ${FIREBASE_PROJECT_ID:invoiceflow-demo}
+  project-id: ${FIREBASE_PROJECT_ID:}
   credentials-path: ${FIREBASE_CREDENTIALS_PATH:}
 
 logging:

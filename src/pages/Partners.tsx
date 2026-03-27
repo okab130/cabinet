@@ -35,7 +35,7 @@ const Partners: React.FC = () => {
   const handleSave = () => {
     const now = new Date().toISOString();
     if (editId) { updatePartner({ id: editId, ...form, createdAt: now, updatedAt: now }); }
-    else { addPartner({ id: `p${Date.now()}`, ...form, createdAt: now, updatedAt: now }); }
+    else { addPartner({ ...form, createdAt: now, updatedAt: now }); }
     setDialogOpen(false);
   };
 

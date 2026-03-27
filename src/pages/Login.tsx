@@ -14,11 +14,11 @@ const Login: React.FC = () => {
   const { login } = useAuthStore();
   const navigate = useNavigate();
 
-  const handleLogin = () => {
+  const handleLogin = async () => {
     if (!email) { setError('メールアドレスを入力してください'); return; }
-    const ok = login(email);
+    const ok = await login(email, password);
     if (ok) navigate('/dashboard');
-    else setError('ログインに失敗しました');
+    else setError('ログインに失敗しました。メールアドレスとパスワードを確認してください。');
   };
 
   return (
